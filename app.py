@@ -1,96 +1,231 @@
 import streamlit as st
 import pandas as pd
 
-from utils import load_excel, export_csv, create_sample_if_missing, now_str, REQUIRED_COLS
+from utils import load_excel, export_csv, now_str
 from da_agent import interpret_query, filter_dataframe, summarize
 
-st.set_page_config(page_title="Agent DA (Excel)", layout="wide")
+# ---------------------------
+# Page config
+# ---------------------------
+st.set_page_config(
+    page_title="Agent DA (Excel)",
+    layout="wide",
+    page_icon="🧾"
+)
 
-st.title("📘 Agent Demandes d’Achat — Excel")
-st.caption("Toutes les réponses sont exclusivement basées sur le fichier Excel fourni.")
+# ---------------------------
+# Modern CSS
+# ---------------------------
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        /* Global */
+        .block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1200px; }
+        [data-testid="stSidebar"] { border-right: 1px solid rgba(120,120,120,.25); }
 
-# --------- Chargement du fichier ---------
+        /* Header */
+        .app-header {
+            display:flex; align-items:center; justify-content:space-between;
+            padding: 14px 16px; border-radius: 16px;
+            background: linear-gradient(135deg, rgba(99,102,241,.20), rgba(16,185,129,.18));
+            border: 1px solid rgba(120,120,120,.25);
+            margin-bottom: 14px;
+        }
+        .app-title { font-size: 1.25rem; font-weight: 800; margin: 0; }
+        .app-subtitle { opacity: .85; margin: 0; margin-top: 4px; font-size: .95rem; }
+
+        /* Cards */
+        .card {
+            padding: 14px 14px;
+            border-radius: 16px;
+            border: 1px solid rgba(120,120,120,.25);
+            background: rgba(255,255,255,.02);
+        }
+        .muted { opacity:.8; font-size:.92rem; }
+        .pill {
+            display:inline-block; padding: 4px 10px; border-radius: 999px;
+            border: 1px solid rgba(120,120,120,.25);
+            background: rgba(99,102,241,.12);
+            margin-right: 8px; margin-bottom: 8px;
+            font-size:.85rem;
+        }
+
+        /* Chat bubbles spacing */
+        [data-testid="stChatMessage"] { padding: 8px 0; }
+
+        /* Buttons */
+        .stButton>button {
+            border-radius: 12px !important;
+            padding: 0.55rem 0.9rem !important;
+        }
+        .stDownloadButton>button {
+            border-radius: 12px !important;
+            padding: 0.55rem 0.9rem !important;
+        }
+
+        /* Dataframe container */
+        .dataframe-container {
+            border-radius: 16px;
+            border: 1px solid rgba(120,120,120,.25);
+            padding: 8px;
+            background: rgba(255,255,255,.02);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+inject_css()
+
+# ---------------------------
+# Session state init
+# ---------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "df" not in st.session_state:
+    st.session_state.df = None
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None
+if "last_summary" not in st.session_state:
+    st.session_state.last_summary = None
+
+# ---------------------------
+# Cached loader (important for perf)
+# ---------------------------
+@st.cache_data(show_spinner=False)
+def load_excel_cached(uploaded_file):
+    # `load_excel` gère None => sample
+    return load_excel(uploaded_file)
+
+# ---------------------------
+# Header
+# ---------------------------
+st.markdown(
+    """
+    <div class="app-header">
+      <div>
+        <p class="app-title">🧾 Agent Demandes d’Achat — Excel</p>
+        <p class="app-subtitle">Réponses exactes basées exclusivement sur le fichier Excel fourni (aucune supposition).</p>
+      </div>
+      <div class="muted">UI moderne • Chat • Filtres • Analyse</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# ---------------------------
+# Sidebar: Upload + Filters
+# ---------------------------
 with st.sidebar:
-    st.header("📂 Fichier Excel")
-    uploaded = st.file_uploader("Dépose ton fichier .xlsx (sinon un fichier de test sera utilisé)",
-                                type=["xlsx"])
+    st.subheader("📂 Source Excel")
+    uploaded = st.file_uploader(
+        "Dépose ton fichier .xlsx (sinon un fichier de test sera utilisé)",
+        type=["xlsx"]
+    )
+
     try:
-        df = load_excel(uploaded)
-        st.success("Fichier chargé.")
+        df = load_excel_cached(uploaded)
+        st.session_state.df = df
+        st.success("Fichier chargé ✅")
     except Exception as e:
         st.error(f"Erreur de chargement : {e}")
         st.stop()
 
-    st.markdown("**Colonnes détectées :** " + ", ".join(df.columns))
+    with st.expander("👀 Aperçu & colonnes", expanded=False):
+        st.caption("Colonnes détectées :")
+        st.write(", ".join(list(df.columns)))
+        st.dataframe(df.head(8), use_container_width=True, hide_index=True)
 
-st.write("### 🔎 Requête en langage naturel")
-query = st.text_input(
-    "Exemples: "
-    "1) 'Cite les DA en situation en cours', "
-    "2) 'Liste DA en statut en cours de validation technique', "
-    "3) 'DA DA1003', "
-    "4) 'Article ART-150', "
-    "5) 'Désignation filtre', "
-    "6) 'CODE DOC DOC-6200'"
-)
+    st.divider()
+    st.subheader("🧰 Filtres (optionnels)")
 
-# Panneau de filtres guidés
-with st.expander("🧰 Filtres guidés (optionnels)"):
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        f_code_da = st.text_input("CODE DA")
-    with c2:
-        f_code_doc = st.text_input("CODE DOC")
-    with c3:
-        f_poste = st.text_input("Poste")
-    with c4:
-        f_article = st.text_input("Article")
+    f_code_da = st.text_input("CODE DA", placeholder="ex: DA1003")
+    f_code_doc = st.text_input("CODE DOC", placeholder="ex: DOC-6200")
+    f_poste = st.text_input("Poste", placeholder="ex: 3")
+    f_article = st.text_input("Article", placeholder="ex: ART-150")
+    f_designation = st.text_input("Désignation contient", placeholder="ex: filtre")
 
-    f_designation = st.text_input("Désignation contient")
+    status_terms_raw = st.text_input(
+        "Mots-clés Status (séparés par ,)",
+        placeholder="ex: en cours, validation technique"
+    )
+    status_terms = [s.strip().lower() for s in status_terms_raw.split(",") if s.strip() != ""]
 
-    status_terms = st.text_input("Mots-clés Status (séparés par ,) ex: en cours, validation technique")
-    status_terms = [s.strip().lower() for s in status_terms.split(",") if s.strip() != ""]
-
+    st.caption("🔃 Tri")
     tri_col = st.selectbox("Tri par", options=["-- Aucun --"] + list(df.columns))
     tri_col = None if tri_col == "-- Aucun --" else tri_col
-    tri_asc = st.toggle("Tri croissant", value=True)
+    tri_asc = st.toggle("Croissant", value=True)
 
-# Boutons d’actions
-cA, cB, cC = st.columns([1,1,2])
-run_btn = cA.button("▶️ Exécuter")
-reset_btn = cB.button("🔄 Réinitialiser")
+    st.divider()
+    st.caption("⚡ Quick prompts")
+    qp1 = st.button("DA en situation en cours")
+    qp2 = st.button("DA en validation technique")
+    qp3 = st.button("Top 10 articles demandés")
+    qp4 = st.button("DA par statut (résumé)")
 
-if reset_btn:
-    st.experimental_rerun()
+# ---------------------------
+# KPI Row (cards)
+# ---------------------------
+df = st.session_state.df
 
-result_df = None
-explanation = ""
+total_rows = len(df)
+unique_da = df["CODE DA"].nunique() if "CODE DA" in df.columns else 0
+total_qty = int(df["Quantité"].sum()) if "Quantité" in df.columns and pd.notna(df["Quantité"].sum()) else 0
+unique_status = df["Status"].nunique() if "Status" in df.columns else 0
 
-if run_btn:
-    # 1) Interprétation de la requête NL
-    interp = interpret_query(query)
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    st.markdown(f'<div class="card"><div class="muted">Lignes</div><div style="font-size:1.6rem;font-weight:800;">{total_rows}</div></div>', unsafe_allow_html=True)
+with k2:
+    st.markdown(f'<div class="card"><div class="muted">DA uniques</div><div style="font-size:1.6rem;font-weight:800;">{unique_da}</div></div>', unsafe_allow_html=True)
+with k3:
+    st.markdown(f'<div class="card"><div class="muted">Quantité totale</div><div style="font-size:1.6rem;font-weight:800;">{total_qty}</div></div>', unsafe_allow_html=True)
+with k4:
+    st.markdown(f'<div class="card"><div class="muted">Statuts</div><div style="font-size:1.6rem;font-weight:800;">{unique_status}</div></div>', unsafe_allow_html=True)
+
+st.write("")
+
+# ---------------------------
+# Helper: build params from NL + guided filters
+# ---------------------------
+def build_params(query_text: str):
+    interp = interpret_query(query_text)
+
+    # Base params from NL (or empty if ambiguous)
     if interp.get("ambiguous", False):
-        st.warning("Selon le fichier Excel, la demande est ambiguë : " + interp["message"])
-        # On continue quand même avec filtres guidés, s'il y en a
-        params = {
-            "code_da": f_code_da or None,
-            "code_doc": f_code_doc or None,
-            "poste": f_poste or None,
-            "article": f_article or None,
-            "designation": f_designation or None,
-            "status_terms": status_terms or []
+        base_params = {
+            "code_da": None,
+            "code_doc": None,
+            "poste": None,
+            "article": None,
+            "designation": None,
+            "status_terms": []
         }
+        ambiguous_msg = interp["message"]
     else:
-        params = interp["params"]
-        # Les filtres guidés complètent sans écraser
-        params["code_da"] = params["code_da"] or (f_code_da or None)
-        params["code_doc"] = params["code_doc"] or (f_code_doc or None)
-        params["poste"] = params["poste"] or (f_poste or None)
-        params["article"] = params["article"] or (f_article or None)
-        params["designation"] = params["designation"] or (f_designation or None)
-        params["status_terms"] = list(dict.fromkeys(params["status_terms"] + (status_terms or [])))
+        base_params = interp["params"]
+        ambiguous_msg = None
 
-    # 2) Application des filtres
+    # Guided filters fill in (without overwriting meaningful NL)
+    base_params["code_da"] = base_params.get("code_da") or (f_code_da or None)
+    base_params["code_doc"] = base_params.get("code_doc") or (f_code_doc or None)
+    base_params["poste"] = base_params.get("poste") or (f_poste or None)
+    base_params["article"] = base_params.get("article") or (f_article or None)
+    base_params["designation"] = base_params.get("designation") or (f_designation or None)
+
+    # Merge status terms
+    merged_status = list(dict.fromkeys((base_params.get("status_terms") or []) + (status_terms or [])))
+    base_params["status_terms"] = merged_status
+
+    return base_params, ambiguous_msg
+
+def run_query(query_text: str):
+    params, ambiguous_msg = build_params(query_text)
+
+    if ambiguous_msg:
+        st.warning("Selon le fichier Excel, la demande est ambiguë : " + ambiguous_msg)
+
     result_df = filter_dataframe(
         df,
         code_da=params.get("code_da"),
@@ -102,34 +237,137 @@ if run_btn:
         tri_col=tri_col,
         tri_asc=tri_asc
     )
+    summary = summarize(result_df)
+    return result_df, summary, params
 
-    # 3) Explications + résumé
-    st.subheader("🧾 Résultats")
-    st.write(summarize(result_df))
+# ---------------------------
+# Chat Area + Tabs
+# ---------------------------
+tabs = st.tabs(["💬 Agent", "🧾 Résultats", "📊 Analyses"])
 
-    # 4) Table
-    if len(result_df) == 0:
-        st.info("Selon le fichier Excel, aucune DA ne correspond à ces critères. "
-                "Vérifie les termes ou élargis la recherche.")
+# ---- Tab: Agent (chat UI)
+with tabs[0]:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("#### 💬 Pose ta question")
+    st.caption("Exemples : “Cite les DA en situation en cours”, “DA DA1003”, “Article ART-150”, “CODE DOC DOC-6200”")
+
+    # Show pills for context
+    st.markdown(
+        """
+        <span class="pill">Source: Excel</span>
+        <span class="pill">Aucune supposition</span>
+        <span class="pill">Statuts flexibles</span>
+        <span class="pill">Export CSV</span>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Render previous messages
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+    # Quick prompts from sidebar
+    quick_query = None
+    if qp1:
+        quick_query = "Cite-moi les DA en situation en cours"
+    elif qp2:
+        quick_query = "Liste les DA en statut en cours de validation technique"
+    elif qp3:
+        quick_query = "Quels sont les top 10 articles demandés ?"
+    elif qp4:
+        quick_query = "Fais un résumé des DA par statut"
+
+    # Chat input
+    user_text = st.chat_input("Écris ta demande ici…")
+
+    if quick_query and not user_text:
+        user_text = quick_query
+
+    if user_text:
+        # Push user message
+        st.session_state.messages.append({"role": "user", "content": user_text})
+        with st.chat_message("user"):
+            st.markdown(user_text)
+
+        # Agent response
+        with st.chat_message("assistant"):
+            with st.spinner("Analyse du fichier Excel en cours…"):
+                # Special case: if user asks top 10 articles, show analysis text-only + store results
+                # We'll still rely ONLY on Excel.
+                result_df, summary, params = run_query(user_text)
+
+                st.session_state.last_result = result_df
+                st.session_state.last_summary = summary
+
+                # Build a clean response
+                response_lines = [summary]
+
+                # If user asked "top 10 articles" explicitly, add info from df
+                if "top 10" in user_text.lower() and "article" in user_text.lower():
+                    top_articles = df["Article"].value_counts().head(10)
+                    response_lines.append("\n**Top 10 articles (selon le fichier Excel)** :")
+                    response_lines.append("\n".join([f"- {a} : {c} occurrence(s)" for a, c in top_articles.items()]))
+
+                # Add filter recap for transparency
+                applied = []
+                for k, v in params.items():
+                    if v and v != []:
+                        applied.append(f"{k}={v}")
+                if applied:
+                    response_lines.append("\n**Filtres appliqués** : " + ", ".join(applied))
+
+                response = "\n".join(response_lines)
+                st.markdown(response)
+
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+# ---- Tab: Résultats
+with tabs[1]:
+    st.subheader("🧾 Résultats (basés sur le fichier Excel)")
+    if st.session_state.last_summary:
+        st.info(st.session_state.last_summary)
+
+    res = st.session_state.last_result
+    if res is None:
+        st.caption("Aucun résultat pour l’instant. Pose une question dans l’onglet **Agent**.")
     else:
-        st.dataframe(result_df, use_container_width=True, hide_index=True)
+        if len(res) == 0:
+            st.warning("Selon le fichier Excel, aucun résultat ne correspond aux critères.")
+        else:
+            st.markdown('<div class="dataframe-container">', unsafe_allow_html=True)
+            st.dataframe(res, use_container_width=True, hide_index=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # 5) Export
-        st.download_button(
-            "💾 Exporter en CSV",
-            data=export_csv(result_df),
-            file_name=f"resultats_DA_{now_str().replace(' ','_').replace(':','')}.csv",
-            mime="text/csv"
-        )
+            st.download_button(
+                "💾 Exporter les résultats en CSV",
+                data=export_csv(res),
+                file_name=f"resultats_DA_{now_str().replace(' ','_').replace(':','')}.csv",
+                mime="text/csv"
+            )
 
-# Panneau d’analyses complémentaires
-with st.expander("📊 Analyses complémentaires (selon le fichier Excel)"):
-    col1, col2 = st.columns(2)
-    with col1:
-        by_status = df.groupby("Status", dropna=False)["CODE_DA_SIMPLE"].count().sort_values(ascending=False)
-        st.write("Comptage par statut :")
-        st.dataframe(by_status.rename("Nombre").reset_index(), use_container_width=True)
-    with col2:
+# ---- Tab: Analyses
+with tabs[2]:
+    st.subheader("📊 Analyses complémentaires (selon le fichier Excel)")
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("**Comptage par statut**")
+        by_status = df.groupby("Status", dropna=False)["CODE DA"].count().sort_values(ascending=False)
+        st.dataframe(by_status.rename("Nombre").reset_index(), use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with c2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("**Top 10 articles demandés**")
         top_articles = df["Article"].value_counts().head(10).rename_axis("Article").reset_index(name="Occurrences")
-        st.write("Top 10 articles demandés :")
-        st.dataframe(top_articles, use_container_width=True)
+        st.dataframe(top_articles, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.write("")
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("**Conseils**")
+    st.caption("Tu peux demander : 'Classe les DA par Quantité décroissante', 'Articles les plus fréquents en cours', 'DA pour un DOC spécifique', etc.")
+    st.markdown("</div>", unsafe_allow_html=True)
