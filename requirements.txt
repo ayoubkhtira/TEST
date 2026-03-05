@@ -1,3 +1,5 @@
 streamlit
-transformers
-torch
+pandas
+openpyxl
+numpy
+rapidfuzz
